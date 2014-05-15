@@ -20,7 +20,7 @@ This module contains the tool of makina.recipe.postgres
 import os
 from setuptools import setup, find_packages
 
-version = '0.1'
+version = '0.2'
 
 README = os.path.join(os.path.dirname(__file__), 
                       'makina',
@@ -29,9 +29,13 @@ README = os.path.join(os.path.dirname(__file__),
 
 long_description = open(README).read() + '\n\n' 
 
-entry_point = 'makina.recipe.postgres:Recipe'
-
-entry_points = {"zc.buildout": ["default = %s" % entry_point]}
+entry_points = {
+        "zc.buildout": ["default = makina.recipe.postgres:Recipe"],
+        "console_scripts": [
+            'pg_ctl = makina.recipe.postgres:pg_ctl',
+            'psql = makina.recipe.postgres:psql',
+            ]
+        }
 
 setup(name='makina.recipe.postgres',
       version=version,
@@ -53,7 +57,7 @@ setup(name='makina.recipe.postgres',
       zip_safe=False,
       install_requires=['setuptools',
                         'zope.testing',
-                        'zc.buildout'
+                        'zc.buildout',
                         # -*- Extra requirements: -*-
                         ],
       entry_points=entry_points,

@@ -16,17 +16,82 @@
 # Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 """Recipe postgres"""
 import logging
+import argparse
 import os
 import time
+import subprocess
 from random import choice
 
-pg_ctl_script = """#!/bin/sh
-PGDATA=%s %s/pg_ctl $@
-"""
+def psql(bin_dir, postgres_data_dir, postgres_db_name, postgres_superuser_name, postgres_port):
+    """ Proxy psql, defaults to our postgres
+    """
+    parser = argparse.ArgumentParser(description='Wrapper for %s/psql, '
+            ' see that for full details.' % bin_dir)
+    parser.add_argument('--bin_dir', action='store',
+            default=bin_dir,
+            help='location of the postgres executables '
+                 '(default: "%s")' % bin_dir)
+    parser.add_argument('-d', '--dbname', action='store',
+            default=postgres_data_dir,
+            help='database name to connect to '
+                 '(default: "%s")' % postgres_db_name)
+    parser.add_argument('-U', '--username', action='store', 
+            default=postgres_superuser_name,
+            help='database user name (default: "%s")' % postgres_superuser_name)
+    parser.add_argument('-p', '--port', action='store', 
+            default=postgres_port,
+            help='database server port (default: "%s")' % postgres_port)
 
-psql_script = """#!/bin/sh
-%s/psql $@
-"""
+    opts, unknown = parser.parse_known_args()
+    optsd = vars(opts).copy()
+
+    cmd = [os.path.join('%(bin_dir)s' % optsd, 'psql')]
+    del optsd['bin_dir']
+
+    for k, v in optsd.items():
+        cmd.extend(['--%s' % k, v])
+
+    cmd.extend(unknown)
+    subprocess.call(cmd)
+
+def pg_ctl(bin_dir, postgres_data_dir, postgres_db_name, postgres_superuser_name, postgres_port):
+    """ Proxy pg_ctl, defaults to our postgres
+    """
+    parser = argparse.ArgumentParser(description='Wrapper for %s/pg_ctl, '
+            ' see that for full details.' % bin_dir)
+    parser.add_argument('--bin_dir', action='store',
+            default=bin_dir,
+            help='location of the postgres executables '
+                 '(default: "%s")' % bin_dir)
+    parser.add_argument('-D', '--pgdata', action='store',
+            default=postgres_data_dir,
+            help='location of the database storage area '
+                 '(default: "%s")' % postgres_data_dir)
+    parser.add_argument('-o', nargs='?', metavar='OPTIONS',
+            help='command line options to pass to postgres '
+                 '(PostgreSQL server executable) or initdb)')
+    parser.add_argument('command', nargs=1, action='store',
+            help="initdb, start, stop, ... (see pg_ctl --help)")
+
+    opts, unknown = parser.parse_known_args()
+    optsd = vars(opts).copy()
+
+    cmd = [os.path.join('%(bin_dir)s' % optsd, 'pg_ctl')]
+    del optsd['bin_dir']
+
+    passthrough = optsd.get('o')
+    del optsd['o']
+    if passthrough:
+        cmd.extend(['-o', passthrough])
+
+    cmd.append(optsd['command'][0])
+    del optsd['command']
+
+    for k, v in optsd.items():
+        cmd.extend(['--%s' % k, v])
+
+    cmd.extend(unknown)
+    subprocess.call(cmd)
 
 class Recipe(object):
     """This recipe is used by zc.buildout"""
@@ -45,11 +110,10 @@ class Recipe(object):
             buildout['buildout']['parts-directory'],
             name)
 
-    def system(self, cmd):
-        code = os.system(cmd)
-        if code:
-            error_occured = True
-            raise RuntimeError('Error running command: %s' % cmd)
+    def system(self, cmd, args):
+        # subprocess.check_call(cmd.split())
+        sys.argv[:] = args # TODO
+        cmd(*[self.options.get(k) for k in ('bin', 'pgdata', 'user', 'port')])
 
     def pgdata_exists(self):
         return os.path.exists(self.options['pgdata']) 
@@ -57,7 +121,6 @@ class Recipe(object):
     def install(self):
         """installer"""
         self.logger = logging.getLogger(self.name)
-        self.create_bin_scripts()
         if not os.path.exists(self.options['location']):
             os.mkdir(self.options['location'])
         #Donrt touch an existing database
@@ -66,7 +129,6 @@ class Recipe(object):
             return self.options['location']
         self.stopdb()
         self.initdb()
-        self.configure_port()
         self.startdb()
         self.do_cmds()
         self.stopdb()
@@ -75,77 +137,46 @@ class Recipe(object):
     def update(self):
         """updater"""
         self.logger = logging.getLogger(self.name)
-        self.create_bin_scripts()
+        # TODO: only stop if we have commands
+        self.stopdb()
         if not self.pgdata_exists():
-            self.stopdb()
             self.initdb()
-            self.startdb()
-            self.do_cmds()
-        self.configure_port()
+        self.startdb()
+        self.do_cmds()
         self.stopdb()
         return self.options['location']
 
     def startdb(self):
         if os.path.exists(os.path.join(self.options.get('pgdata'),'postmaster.pid')):
-            self.system('%s restart'%(self.bin_pg_ctl))
+            self.system(pg_ctl, 'restart')
         else:
-            self.system('%s start'%(self.bin_pg_ctl))
+            self.system(pg_ctl, 'start')
         time.sleep(4)
 
     def stopdb(self):
         if os.path.exists(os.path.join(self.options.get('pgdata'),'postmaster.pid')):
-            self.system('%s stop'%(self.bin_pg_ctl))
+            self.system(pg_ctl, 'stop')
             time.sleep(4)
 
     def isdbstarted(self):
         PIDFILE = os.path.join(self.options.get('pgdata'),'postmaster.pid')
         return os.path.exists(pg_ctl) and os.path.exists(PIDFILE)
 
-    def create_bin_scripts(self):
-        buildout_bin_path = self.buildout['buildout']['bin-directory']
-        # Create a wrapper script for psql user and admin
-        psql = os.path.join(buildout_bin_path,'psql')
-        script = open(psql , 'w')
-        script.write(psql_script % (self.options.get('bin')))
-        script.close()
-        os.chmod(psql, 0755)
-        pg_ctl = os.path.join(buildout_bin_path,'pg_ctl')
-        script = open(pg_ctl, 'w')
-        script.write(pg_ctl_script % (self.options.get('pgdata'), self.options.get('bin')))
-        script.close()
-        os.chmod(pg_ctl, 0755)
-        self.bin_pg_ctl = pg_ctl
-        self.bin_psql = psql
-        return pg_ctl, psql
-
     def initdb(self):
         initdb_options = self.options.get('initdb',None)
-        bin = self.options.get('bin','')
+        bin_dir = self.options.get('bin','')
         if initdb_options and not self.pgdata_exists():
-            self.system('%s %s' % (os.path.join(bin, 'initdb'), initdb_options) )
-
-    def configure_port(self):
-        port = self.options.get('port',None)
-        if not port: return None
-        self.logger.warning( " !!!!!!!!!!!! " )
-        self.logger.warning( " Warning port is not tested at the moment" )
-        self.logger.warning( " !!!!!!!!!!!! " )
-        # Update the port setting and start up the server
-        #FIXME we need to get pgdata from initdb option
-        conffile = os.path.join(self.options.get('pgdata'),'postgresql.conf')
-        f = open(conffile)
-        conf = ('port = %s' % port).join(f.read().split('#port = 5432'))
-        f.close()
-        open(conffile, 'w').write(conf)
+            self.system(pg_ctl, 'initdb', initdb_options) # TODO
+            # self.system('%s %s' % (os.path.join(bin_dir, 'initdb'), initdb_options) )
 
     def do_cmds(self):
         cmds = self.options.get('cmds', None)
-        bin = self.options.get('bin')
+        bin_dir = self.options.get('bin')
         if not cmds: return None
         cmds = cmds.split(os.linesep)
         for cmd in cmds:
             if not cmd: continue
-            try: self.system('%s/%s' % (bin, cmd))
+            try: self.system('%s/%s' % (bin_dir, cmd))
             except RuntimeError, e:
                 pass
         dest = self.options['location']
