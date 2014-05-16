@@ -20,6 +20,7 @@ import argparse
 import os
 import time
 import subprocess
+import sys
 from random import choice
 
 def psql(bin_dir, postgres_data_dir, postgres_db_name, postgres_superuser_name, postgres_port):
@@ -32,7 +33,7 @@ def psql(bin_dir, postgres_data_dir, postgres_db_name, postgres_superuser_name, 
             help='location of the postgres executables '
                  '(default: "%s")' % bin_dir)
     parser.add_argument('-d', '--dbname', action='store',
-            default=postgres_data_dir,
+            default=postgres_db_name,
             help='database name to connect to '
                  '(default: "%s")' % postgres_db_name)
     parser.add_argument('-U', '--username', action='store', 
@@ -112,8 +113,12 @@ class Recipe(object):
 
     def system(self, cmd, args):
         # subprocess.check_call(cmd.split())
-        sys.argv[:] = args # TODO
-        cmd(*[self.options.get(k) for k in ('bin', 'pgdata', 'user', 'port')])
+        sys.argv[:] = [
+                os.path.join(
+                    self.options.get('bin'),
+                    cmd.func_name)
+                    ] + args
+        cmd(*[self.options.get(k) for k in ('bin', 'pgdata', 'user', 'dbname', 'port')])
 
     def pgdata_exists(self):
         return os.path.exists(self.options['pgdata']) 
@@ -123,7 +128,7 @@ class Recipe(object):
         self.logger = logging.getLogger(self.name)
         if not os.path.exists(self.options['location']):
             os.mkdir(self.options['location'])
-        #Donrt touch an existing database
+        # Don't touch an existing database
         if self.pgdata_exists():
             self.stopdb()
             return self.options['location']
@@ -148,14 +153,14 @@ class Recipe(object):
 
     def startdb(self):
         if os.path.exists(os.path.join(self.options.get('pgdata'),'postmaster.pid')):
-            self.system(pg_ctl, 'restart')
+            self.system(pg_ctl, ['restart'])
         else:
-            self.system(pg_ctl, 'start')
+            self.system(pg_ctl, ['start'])
         time.sleep(4)
 
     def stopdb(self):
         if os.path.exists(os.path.join(self.options.get('pgdata'),'postmaster.pid')):
-            self.system(pg_ctl, 'stop')
+            self.system(pg_ctl, ['stop'])
             time.sleep(4)
 
     def isdbstarted(self):
@@ -166,7 +171,7 @@ class Recipe(object):
         initdb_options = self.options.get('initdb',None)
         bin_dir = self.options.get('bin','')
         if initdb_options and not self.pgdata_exists():
-            self.system(pg_ctl, 'initdb', initdb_options) # TODO
+            self.system(pg_ctl, ['initdb'] + initdb_options.split())
             # self.system('%s %s' % (os.path.join(bin_dir, 'initdb'), initdb_options) )
 
     def do_cmds(self):
@@ -176,7 +181,9 @@ class Recipe(object):
         cmds = cmds.split(os.linesep)
         for cmd in cmds:
             if not cmd: continue
-            try: self.system('%s/%s' % (bin_dir, cmd))
-            except RuntimeError, e:
-                pass
+            cmd = os.path.join([bin_dir, cmd])
+            try:
+                subprocess.check_call(cmd)
+            except CalledProcessError, e:
+                print cmd, 'failed. Return code: ', e.returncode
         dest = self.options['location']
